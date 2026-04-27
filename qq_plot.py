@@ -2,8 +2,8 @@
 
 This script evaluates generated samples saved by sample.py. It loads
 metadata.json, reads the corresponding reference test data from the prepared
-.pt file, selects a fixed random subset of test samples, computes common
-quantiles, and saves an overlay QQ plot.
+.pt file, optionally selects a fixed random subset of test samples, computes
+common quantiles, and saves an overlay QQ plot.
 
 The comparison is performed in z-space, i.e., the same normalized space used
 for training and sampling.
@@ -12,7 +12,11 @@ Example:
     python qq_plot.py --sample-dir samples/2026-04-27_153000_trainseed4
 
     python qq_plot.py --sample-dir samples/2026-04-27_153000_trainseed4 \
-        --n-quantiles 100000 --q-min 1e-4 --n-test-samples 100000
+        --n-quantiles 100000 --q-min 1e-4
+
+    # Optional: use a fixed random subset of test samples.
+    python qq_plot.py --sample-dir samples/2026-04-27_153000_trainseed4 \
+        --n-test-samples 100000 --test-subsample-seed 42
 """
 
 from __future__ import annotations
@@ -103,14 +107,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--n-test-samples",
         type=int,
-        default=100_000,
-        help="Number of test samples used for QQ plots.",
+        default=None,
+        help=(
+            "Number of test samples used for QQ plots. "
+            "Default: use all test samples."
+        ),
     )
     parser.add_argument(
         "--test-subsample-seed",
         type=int,
         default=42,
-        help="Random seed for selecting test samples without replacement.",
+        help=(
+            "Random seed for selecting test samples without replacement. "
+            "Used only when --n-test-samples is specified and smaller than "
+            "the full test set size."
+        ),
     )
     parser.add_argument(
         "--plot-step",
@@ -218,10 +229,16 @@ def load_generated_samples(metadata: dict, sample_dir: Path) -> dict[str, np.nda
 
 def subsample_test_samples(
     values: np.ndarray,
-    n_samples: int,
+    n_samples: int | None,
     seed: int,
 ) -> np.ndarray:
-    """Select a fixed random subset of test samples without replacement."""
+    """Select a fixed random subset of test samples without replacement.
+
+    If n_samples is None, all test samples are used.
+    """
+    if n_samples is None:
+        return values
+
     if n_samples <= 0:
         raise ValueError("n_samples must be positive.")
 
@@ -422,8 +439,12 @@ def main() -> None:
     print(f"SAMPLE_DIR          : {sample_dir}")
     print(f"OUTPUT_DIR          : {output_dir.resolve()}")
     print(f"reference all       : shape={reference_all.shape}")
-    print(f"reference subset    : shape={reference.shape}")
-    print(f"test subsample seed : {args.test_subsample_seed}")
+    print(f"reference used      : shape={reference.shape}")
+
+    if args.n_test_samples is None or reference_all.shape[0] == reference.shape[0]:
+        print("test subset         : all test samples")
+    else:
+        print(f"test subsample seed : {args.test_subsample_seed}")
 
     for name, values in samples.items():
         print(f"{name:18s}: shape={values.shape}")
