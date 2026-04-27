@@ -356,7 +356,6 @@ def main() -> None:
 if __name__ == "__main__":
     main()
     "g_sde": "#56B4E9",          # sky blue
-}
 
 MARKERS = {
     "t_ode": "o",
