@@ -2,7 +2,8 @@
 
 This script evaluates generated samples saved by sample.py. It loads
 metadata.json, reads the corresponding reference test data from the prepared
-.pt file, computes common quantiles, and saves an overlay QQ plot.
+.pt file, selects a fixed random subset of test samples, computes common
+quantiles, and saves an overlay QQ plot.
 
 The comparison is performed in z-space, i.e., the same normalized space used
 for training and sampling.
@@ -11,7 +12,7 @@ Example:
     python qq_plot.py --sample-dir samples/2026-04-27_153000_trainseed4
 
     python qq_plot.py --sample-dir samples/2026-04-27_153000_trainseed4 \
-        --n-quantiles 100000 --q-min 1e-4
+        --n-quantiles 100000 --q-min 1e-4 --n-test-samples 100000
 """
 
 from __future__ import annotations
@@ -98,6 +99,18 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=1e-4,
         help="Smallest quantile. The largest quantile is 1 - q_min.",
+    )
+    parser.add_argument(
+        "--n-test-samples",
+        type=int,
+        default=100_000,
+        help="Number of test samples used for QQ plots.",
+    )
+    parser.add_argument(
+        "--test-subsample-seed",
+        type=int,
+        default=42,
+        help="Random seed for selecting test samples without replacement.",
     )
     parser.add_argument(
         "--plot-step",
@@ -201,6 +214,36 @@ def load_generated_samples(metadata: dict, sample_dir: Path) -> dict[str, np.nda
         samples[name] = np.load(path).astype(np.float32).reshape(-1)
 
     return samples
+
+
+def subsample_test_samples(
+    values: np.ndarray,
+    n_samples: int,
+    seed: int,
+) -> np.ndarray:
+    """Select a fixed random subset of test samples without replacement."""
+    if n_samples <= 0:
+        raise ValueError("n_samples must be positive.")
+
+    if values.shape[0] < n_samples:
+        raise ValueError(
+            f"Requested {n_samples} test samples, "
+            f"but only {values.shape[0]} are available."
+        )
+
+    if values.shape[0] == n_samples:
+        return values
+
+    rng = np.random.default_rng(seed)
+    indices = rng.choice(values.shape[0], size=n_samples, replace=False)
+    return values[indices]
+
+
+def check_finite(name: str, values: np.ndarray) -> None:
+    """Check that all values are finite."""
+    if not np.isfinite(values).all():
+        n_bad = int((~np.isfinite(values)).sum())
+        raise ValueError(f"{name} contains {n_bad} non-finite values.")
 
 
 def compute_quantiles(
@@ -363,15 +406,27 @@ def main() -> None:
             f"This script expects z-space samples, but metadata space is '{space}'."
         )
 
-    reference = load_reference_test_z(metadata, sample_dir)
+    reference_all = load_reference_test_z(metadata, sample_dir)
+    reference = subsample_test_samples(
+        reference_all,
+        n_samples=args.n_test_samples,
+        seed=args.test_subsample_seed,
+    )
+
     samples = load_generated_samples(metadata, sample_dir)
 
-    print(f"SAMPLE_DIR  : {sample_dir}")
-    print(f"OUTPUT_DIR  : {output_dir.resolve()}")
-    print(f"reference   : shape={reference.shape}")
+    check_finite("reference", reference)
+    for name, values in samples.items():
+        check_finite(name, values)
+
+    print(f"SAMPLE_DIR          : {sample_dir}")
+    print(f"OUTPUT_DIR          : {output_dir.resolve()}")
+    print(f"reference all       : shape={reference_all.shape}")
+    print(f"reference subset    : shape={reference.shape}")
+    print(f"test subsample seed : {args.test_subsample_seed}")
 
     for name, values in samples.items():
-        print(f"{name:14s}: shape={values.shape}")
+        print(f"{name:18s}: shape={values.shape}")
 
     q, ref_q, sample_q = compute_quantiles(
         reference=reference,
@@ -402,4 +457,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()   
+    main()
