@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import csv
 import json
 import math
 import random
@@ -607,7 +608,7 @@ def train_one_run(
 
 
 def save_loss_plot(path: Path, loss_log: list[tuple[int, float]], title: str) -> None:
-    """Save a loss curve plot."""
+    """Save a loss curve plot for a single run."""
     plt.figure(figsize=(6, 4))
     if len(loss_log) > 0:
         steps, losses = zip(*loss_log)
@@ -621,6 +622,53 @@ def save_loss_plot(path: Path, loss_log: list[tuple[int, float]], title: str) ->
     plt.tight_layout()
     plt.savefig(path, dpi=150)
     plt.close()
+
+
+def read_loss_csv(path: Path) -> list[tuple[int, float]]:
+    """Read a loss.csv file saved by this script."""
+    loss_log: list[tuple[int, float]] = []
+    with open(path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            loss_log.append((int(row["step"]), float(row["loss"])))
+    return loss_log
+
+
+def save_loss_comparison_plot(run_dirs: Iterable[Path], output_path: Path) -> None:
+    """Save a comparison plot of loss curves across multiple runs."""
+    plt.figure(figsize=(7, 4))
+
+    n_plotted = 0
+    for run_dir in run_dirs:
+        loss_path = run_dir / "loss.csv"
+        if not loss_path.exists():
+            print(f"Skip missing loss file: {loss_path}")
+            continue
+
+        loss_log = read_loss_csv(loss_path)
+        if len(loss_log) == 0:
+            print(f"Skip empty loss file: {loss_path}")
+            continue
+
+        steps, losses = zip(*loss_log)
+        plt.plot(steps, losses, label=run_dir.name)
+        n_plotted += 1
+
+    if n_plotted == 0:
+        plt.close()
+        print("No loss curves were available for comparison.")
+        return
+
+    plt.yscale("log")
+    plt.xlabel("Step")
+    plt.ylabel("Loss")
+    plt.title("Loss curves")
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.legend(fontsize=8)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150)
+    plt.close()
+    print(f"Saved loss comparison plot to: {output_path}")
 
 
 def build_base_experiments(args: argparse.Namespace) -> list[TrainCfg]:
@@ -698,7 +746,7 @@ def main() -> None:
     for cfg in base_experiments:
         print(f"  - {cfg.exp_name}")
 
-    run_dirs: list[str] = []
+    run_dirs: list[Path] = []
 
     for train_seed in args.train_seeds:
         pt_path = prepared_pt_path(
@@ -720,9 +768,13 @@ def main() -> None:
             cfg.data_pt_path = str(pt_path)
 
             run_dir = train_one_run(cfg, runs_dir=runs_dir, device=device)
-            run_dirs.append(str(run_dir))
+            run_dirs.append(run_dir)
 
-    print("\nAll runs saved:")
+    comparison_path = runs_dir / "loss_comparison.png"
+    save_loss_comparison_plot(run_dirs, comparison_path)
+
+    print("
+All runs saved:")
     for run_dir in run_dirs:
         print(f" - {run_dir}")
 
