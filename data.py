@@ -1,7 +1,7 @@
 """Prepare one-dimensional Student-t datasets for experiments.
 
-This script generates raw train/test samples from a standard Student-t distribution, 
-normalizes them using training-set statistics only, 
+This script generates raw train/test samples from a standard Student-t distribution,
+normalizes them using training-set statistics only,
 and saves PyTorch .pt files for downstream training and evaluation.
 
 Default settings reproduce the data configuration used in the experiments:
@@ -21,7 +21,6 @@ Example:
 from __future__ import annotations
 
 import argparse
-import random
 from pathlib import Path
 from typing import Iterable
 
@@ -81,12 +80,6 @@ def parse_args() -> argparse.Namespace:
         help="Random seed for generating the fixed test dataset.",
     )
     parser.add_argument(
-        "--global-seed",
-        type=int,
-        default=42,
-        help="Global random seed used before data generation.",
-    )
-    parser.add_argument(
         "--force",
         action="store_true",
         help="Overwrite existing dataset files.",
@@ -107,20 +100,14 @@ def get_project_root() -> Path:
     return project_root
 
 
-def set_seed(seed: int) -> None:
-    """Set random seeds for reproducibility."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-
-
 def get_device() -> torch.device:
-    """Return CUDA device if available, otherwise CPU."""
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    """Return CPU device for reproducible data generation."""
+    return torch.device("cpu")
+
+
+def format_nu_for_filename(nu: float) -> str:
+    """Return a filesystem-friendly string for nu."""
+    return f"{nu:g}".replace("-", "m").replace(".", "p")
 
 
 def sample_student_t_1d_chunked(
@@ -153,8 +140,6 @@ def sample_student_t_1d_chunked(
 
     # StudentT.sample uses the PyTorch random number generator.
     torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
 
     distribution = StudentT(
         df=torch.tensor(float(nu), device=device),
@@ -174,9 +159,16 @@ def sample_student_t_1d_chunked(
     return np.concatenate(chunks, axis=0)
 
 
-def raw_dataset_path(data_dir: Path, split: str, seed: int, n_samples: int) -> Path:
+def raw_dataset_path(
+    data_dir: Path,
+    split: str,
+    seed: int,
+    n_samples: int,
+    nu: float,
+) -> Path:
     """Return the path for a raw .npz dataset."""
-    return data_dir / f"student_t1d_{split}_seed{seed}_N{n_samples}.npz"
+    nu_tag = format_nu_for_filename(nu)
+    return data_dir / f"student_t1d_nu{nu_tag}_{split}_seed{seed}_N{n_samples}.npz"
 
 
 def normalized_dataset_path(
@@ -185,10 +177,12 @@ def normalized_dataset_path(
     test_seed: int,
     n_train: int,
     n_test: int,
+    nu: float,
 ) -> Path:
     """Return the path for a normalized .pt dataset."""
+    nu_tag = format_nu_for_filename(nu)
     return out_dir / (
-        f"student_t1d_norm_trainseed{train_seed}_testseed{test_seed}"
+        f"student_t1d_nu{nu_tag}_norm_trainseed{train_seed}_testseed{test_seed}"
         f"_Ntrain{n_train}_Ntest{n_test}.pt"
     )
 
@@ -228,7 +222,7 @@ def generate_raw_datasets(
     force: bool,
 ) -> None:
     """Generate and save raw train/test datasets."""
-    test_path = raw_dataset_path(data_dir, "test", test_seed, n_test)
+    test_path = raw_dataset_path(data_dir, "test", test_seed, n_test, nu)
     if test_path.exists() and not force:
         print(f"Skip existing test dataset: {test_path}")
     else:
@@ -242,7 +236,7 @@ def generate_raw_datasets(
         save_raw_dataset(test_path, test_raw, nu=nu, seed=test_seed, force=force)
 
     for train_seed in train_seeds:
-        train_path = raw_dataset_path(data_dir, "train", train_seed, n_train)
+        train_path = raw_dataset_path(data_dir, "train", train_seed, n_train, nu)
         if train_path.exists() and not force:
             print(f"Skip existing train dataset: {train_path}")
             continue
@@ -259,6 +253,7 @@ def generate_raw_datasets(
 
 def normalize_and_save_datasets(
     data_dir: Path,
+    nu: float,
     train_seeds: Iterable[int],
     test_seed: int,
     n_train: int,
@@ -276,23 +271,23 @@ def normalize_and_save_datasets(
     out_dir = data_dir / "normalized_pt"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    test_npz = raw_dataset_path(data_dir, "test", test_seed, n_test)
+    test_npz = raw_dataset_path(data_dir, "test", test_seed, n_test, nu)
     if not test_npz.exists():
         raise FileNotFoundError(f"Test dataset not found: {test_npz}")
 
     test_pack = np.load(test_npz)
     test_raw = test_pack["x"].astype(np.float32)
 
-    nu = float(test_pack["nu"])
+    nu_loaded = float(test_pack["nu"])
     mu = float(test_pack["mu"]) if "mu" in test_pack else 0.0
     sigma = float(test_pack["sigma"]) if "sigma" in test_pack else 1.0
 
     print(f"Loaded test dataset: {test_npz}")
     print(f"test_raw: shape={test_raw.shape}, dtype={test_raw.dtype}")
-    print(f"distribution parameters: nu={nu}, mu={mu}, sigma={sigma}")
+    print(f"distribution parameters: nu={nu_loaded}, mu={mu}, sigma={sigma}")
 
     for train_seed in train_seeds:
-        train_npz = raw_dataset_path(data_dir, "train", train_seed, n_train)
+        train_npz = raw_dataset_path(data_dir, "train", train_seed, n_train, nu)
         if not train_npz.exists():
             raise FileNotFoundError(f"Train dataset not found: {train_npz}")
 
@@ -302,6 +297,7 @@ def normalize_and_save_datasets(
             test_seed=test_seed,
             n_train=n_train,
             n_test=n_test,
+            nu=nu_loaded,
         )
         if out_pt.exists() and not force:
             print(f"Skip existing normalized dataset: {out_pt}")
@@ -324,7 +320,7 @@ def normalize_and_save_datasets(
                 "test": torch.from_numpy(test),
                 "train_raw_mean": torch.from_numpy(mean.astype(np.float32)),
                 "train_raw_std": torch.from_numpy(std.astype(np.float32)),
-                "nu": float(nu),
+                "nu": float(nu_loaded),
                 "mu": float(mu),
                 "sigma": float(sigma),
                 "train_seed": int(train_seed),
@@ -351,7 +347,6 @@ def main() -> None:
     data_dir = args.data_dir if args.data_dir is not None else project_root / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    set_seed(args.global_seed)
     device = get_device()
 
     print(f"PROJECT_ROOT: {project_root.resolve()}")
@@ -372,6 +367,7 @@ def main() -> None:
 
     normalize_and_save_datasets(
         data_dir=data_dir,
+        nu=args.nu,
         train_seeds=args.train_seeds,
         test_seed=args.test_seed,
         n_train=args.n_train,
