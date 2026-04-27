@@ -252,6 +252,11 @@ def get_device() -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def format_nu_for_filename(nu: float) -> str:
+    """Return a filesystem-friendly string for nu."""
+    return f"{nu:g}".replace("-", "m").replace(".", "p")
+
+
 def c_noise(sigma: torch.Tensor) -> torch.Tensor:
     """Noise embedding used in EDM."""
     return 0.25 * torch.log(sigma)
@@ -271,7 +276,7 @@ def c_out(sigma: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
 
 def c_in(sigma: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
     """EDM input coefficient with alpha-controlled preconditioning."""
-    return torch.sqrt(alpha) / torch.sqrt(alpha * sigma**2 + SIGMA_DATA**2)
+    return 1.0 / torch.sqrt(alpha * sigma**2 + SIGMA_DATA**2)
 
 
 def lambda_weight(sigma: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
@@ -349,7 +354,11 @@ def sample_sigma_lognormal(
     return torch.exp(torch.randn(batch_size, 1, device=device) * pi_std + pi_mean)
 
 
-def sample_noise_student_t(batch_size: int, nu: float, device: torch.device) -> torch.Tensor:
+def sample_noise_student_t(
+    batch_size: int,
+    nu: float,
+    device: torch.device,
+) -> torch.Tensor:
     """Sample Student-t noise."""
     distribution = StudentT(df=torch.tensor(float(nu), device=device))
     return distribution.sample((batch_size, 1))
@@ -377,10 +386,12 @@ def prepared_pt_path(
     test_seed: int,
     n_train: int,
     n_test: int,
+    nu: float,
 ) -> Path:
     """Return the normalized dataset path created by data.py."""
+    nu_tag = format_nu_for_filename(nu)
     return data_dir / "normalized_pt" / (
-        f"student_t1d_norm_trainseed{train_seed}_testseed{test_seed}"
+        f"student_t1d_nu{nu_tag}_norm_trainseed{train_seed}_testseed{test_seed}"
         f"_Ntrain{n_train}_Ntest{n_test}.pt"
     )
 
@@ -755,6 +766,7 @@ def main() -> None:
             test_seed=args.test_seed,
             n_train=args.n_train,
             n_test=args.n_test,
+            nu=args.nu,
         )
         if not pt_path.exists():
             raise FileNotFoundError(
