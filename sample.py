@@ -147,14 +147,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--nu-init-sde",
         type=float,
-        default=3.0,
-        help="Student-t degrees of freedom for t-SDE initialization.",
+        default=None,
+        help=(
+            "Student-t degrees of freedom for t-SDE initialization. "
+            "Default: same as --nu-coeff."
+        ),
     )
     parser.add_argument(
         "--nu-coeff",
         type=float,
         default=2.5,
-        help="Degrees of freedom used in the state-dependent t-SDE coefficient.",
+        help=(
+            "Degrees of freedom used in the state-dependent t-SDE coefficient. "
+            "By default, this is also used for t-SDE initialization."
+        ),
     )
     parser.add_argument(
         "--seed",
@@ -285,7 +291,7 @@ def c_out(sigma: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
 
 def c_in(sigma: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
     """EDM input coefficient with alpha-controlled preconditioning."""
-    return torch.sqrt(alpha) / torch.sqrt(alpha * sigma**2 + SIGMA_DATA**2)
+    return 1.0 / torch.sqrt(alpha * sigma**2 + SIGMA_DATA**2)
 
 
 class MLPDenoiser(nn.Module):
@@ -418,8 +424,10 @@ def sample_tnet_state_sde(
     If coeff_dep_on is False, the state-dependent coefficient is replaced by 1,
     giving the ablated t-SDE sampler.
     """
-    if nu_coeff <= 1.0:
-        raise ValueError("nu_coeff must be greater than 1.0.")
+    if nu_init <= 0.0:
+        raise ValueError("nu_init must be positive.")
+    if nu_coeff <= 2.0:
+        raise ValueError("nu_coeff must be greater than 2.0.")
 
     sigmas = sigma_schedule_karras(n_steps, sigma_min, sigma_max, rho, device)
 
@@ -582,6 +590,12 @@ def main() -> None:
     nu_train = float(cfg_t.get("nu", 3.0))
     nu_init_ode = float(args.nu_init) if args.nu_init is not None else nu_train
 
+    # For t-SDE, use one sampling nu consistently by default:
+    # the same value is used for both the initial Student-t prior and
+    # the state-dependent diffusion coefficient.
+    nu_coeff = float(args.nu_coeff)
+    nu_init_sde = float(args.nu_init_sde) if args.nu_init_sde is not None else nu_coeff
+
     alpha_t = float(cfg_t["alpha_resolved"])
     alpha_g = float(cfg_g.get("alpha_resolved", 1.0))
     hidden_t = int(cfg_t.get("hidden", 128))
@@ -603,6 +617,10 @@ def main() -> None:
     print(f"G_RUN_DIR   : {g_run_dir.name}")
     print(f"G_CKPT      : {g_ckpt.name}")
     print(f"n_samples   : {args.n_samples}")
+    print(f"nu_train    : {nu_train}")
+    print(f"nu_init_ode : {nu_init_ode}")
+    print(f"nu_init_sde : {nu_init_sde}")
+    print(f"nu_coeff    : {nu_coeff}")
 
     metadata = {
         "train_seed": int(args.train_seed),
@@ -616,8 +634,8 @@ def main() -> None:
         "rho": float(args.rho),
         "nu_train": float(nu_train),
         "nu_init_ode": float(nu_init_ode),
-        "nu_init_sde": float(args.nu_init_sde),
-        "nu_coeff": float(args.nu_coeff),
+        "nu_init_sde": float(nu_init_sde),
+        "nu_coeff": float(nu_coeff),
         "space": "z",
         "t_run_dir": str(t_run_dir),
         "g_run_dir": str(g_run_dir),
@@ -646,8 +664,8 @@ def main() -> None:
             "t_sde",
             lambda n: sample_tnet_state_sde(
                 model=model_t,
-                nu_init=args.nu_init_sde,
-                nu_coeff=args.nu_coeff,
+                nu_init=nu_init_sde,
+                nu_coeff=nu_coeff,
                 n_samples=n,
                 sigma_max=args.sigma_max,
                 sigma_min=args.sigma_min,
@@ -662,8 +680,8 @@ def main() -> None:
             "t_sde_coeff1",
             lambda n: sample_tnet_state_sde(
                 model=model_t,
-                nu_init=args.nu_init_sde,
-                nu_coeff=args.nu_coeff,
+                nu_init=nu_init_sde,
+                nu_coeff=nu_coeff,
                 n_samples=n,
                 sigma_max=args.sigma_max,
                 sigma_min=args.sigma_min,
