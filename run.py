@@ -773,10 +773,10 @@ def main() -> None:
     comparison_path = runs_dir / "loss_comparison.png"
     save_loss_comparison_plot(run_dirs, comparison_path)
 
-print()
-print("All runs saved:")
-for run_dir in run_dirs:
-    print(f" - {run_dir}")
+    print()
+    print("All runs saved:")
+    for run_dir in run_dirs:
+        print(f" - {run_dir}")
 
 
 if __name__ == "__main__":
