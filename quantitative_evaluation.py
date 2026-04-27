@@ -9,16 +9,37 @@ Metrics:
     2. Tail probabilities in raw-space after inverse z-score transformation using
        the training statistics stored in the prepared .pt file.
 
+This script supports using different sample directories for different metrics.
+This is useful when the paper used, for example, QQ-plot samples for W1 and
+independent larger samples for tail-probability evaluation.
+
+The tail metric preserves the original notebook behavior: for each sampler,
+empirical tail probabilities are computed batch-by-batch, and the reported
+values are the mean and standard deviation across batches.
+
 The inverse transform is
     x_raw = z * train_raw_std + train_raw_mean,
 where train_raw_mean and train_raw_std are exactly the statistics used by
 data.py for normalization.
 
-Example:
-    python metrics.py --sample-dir samples/2026-04-27_153000_trainseed4
+Examples:
+    # Use the same sample directory for both W1 and tail metrics.
+    python quantitative_evaluation.py --sample-dir samples/xxx_trainseed4
 
-    python metrics.py --sample-dir samples/2026-04-27_153000_trainseed4 \
-        --q-list 0.995 0.999 --tail-mode two-sided
+    # Reproduce the paper-style split: W1 from QQ samples, tail from metrics samples.
+    python quantitative_evaluation.py \
+        --w1-sample-dir samples_qq/xxx_trainseed4 \
+        --tail-sample-dir samples_metrics/yyy_trainseed4 \
+        --q-list 0.995 0.999 \
+        --tail-mode two-sided \
+        --tail-n-batches 10 \
+        --tail-batch-size 1000000
+
+For a smoke test with only 2,000 samples per sampler:
+    python quantitative_evaluation.py \
+        --sample-dir samples_smoke/xxx_trainseed0 \
+        --tail-n-batches 10 \
+        --tail-batch-size 200
 """
 
 from __future__ import annotations
@@ -44,11 +65,6 @@ SAMPLER_LABELS = {
 SAMPLER_ORDER = ["t_ode", "t_sde", "t_sde_coeff1", "g_sde"]
 
 
-# -----------------------------------------------------------------------------
-# Command-line interface
-# -----------------------------------------------------------------------------
-
-
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Compute quantitative metrics.")
@@ -56,14 +72,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sample-dir",
         type=Path,
-        required=True,
-        help="Directory created by sample.py containing metadata.json and .npy files.",
+        default=None,
+        help=(
+            "Sample directory used for both W1 and tail metrics. "
+            "Can be overridden by --w1-sample-dir and/or --tail-sample-dir."
+        ),
+    )
+    parser.add_argument(
+        "--w1-sample-dir",
+        type=Path,
+        default=None,
+        help="Sample directory used for W1. Default: --sample-dir.",
+    )
+    parser.add_argument(
+        "--tail-sample-dir",
+        type=Path,
+        default=None,
+        help="Sample directory used for tail metrics. Default: --sample-dir.",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
-        help="Directory for saving metric files. Default: <sample_dir>/metrics.",
+        help="Directory for saving metric files. Default: <tail_sample_dir>/metrics.",
+    )
+    parser.add_argument(
+        "--metrics",
+        nargs="+",
+        choices=["w1", "tail", "all"],
+        default=["all"],
+        help="Metrics to compute.",
     )
     parser.add_argument(
         "--max-w1-samples",
@@ -94,8 +132,32 @@ def parse_args() -> argparse.Namespace:
         "--df-theory",
         type=float,
         default=None,
-        help="Degrees of freedom of the theoretical Student-t distribution. "
-        "Default: nu stored in the prepared .pt file.",
+        help=(
+            "Degrees of freedom of the theoretical Student-t distribution. "
+            "Default: nu stored in the prepared .pt file."
+        ),
+    )
+    parser.add_argument(
+        "--tail-n-batches",
+        type=int,
+        default=10,
+        help="Number of batches used for tail-probability evaluation.",
+    )
+    parser.add_argument(
+        "--tail-batch-size",
+        type=int,
+        default=1_000_000,
+        help="Batch size used for tail-probability evaluation.",
+    )
+    parser.add_argument(
+        "--tail-batch-policy",
+        choices=["error", "truncate"],
+        default="error",
+        help=(
+            "How to handle insufficient samples for tail batches. "
+            "'error' requires at least tail_n_batches * tail_batch_size samples. "
+            "'truncate' uses as many full batches as available."
+        ),
     )
     parser.add_argument(
         "--save-json",
@@ -106,9 +168,27 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-# -----------------------------------------------------------------------------
-# I/O utilities
-# -----------------------------------------------------------------------------
+def selected_metrics(metrics_arg: list[str]) -> set[str]:
+    """Resolve selected metrics."""
+    selected = set(metrics_arg)
+    if "all" in selected:
+        return {"w1", "tail"}
+    return selected
+
+
+def resolve_metric_sample_dirs(args: argparse.Namespace) -> tuple[Path | None, Path | None]:
+    """Resolve W1 and tail sample directories from CLI arguments."""
+    metrics = selected_metrics(args.metrics)
+
+    w1_dir = args.w1_sample_dir if args.w1_sample_dir is not None else args.sample_dir
+    tail_dir = args.tail_sample_dir if args.tail_sample_dir is not None else args.sample_dir
+
+    if "w1" in metrics and w1_dir is None:
+        raise ValueError("W1 metric requires --sample-dir or --w1-sample-dir.")
+    if "tail" in metrics and tail_dir is None:
+        raise ValueError("Tail metric requires --sample-dir or --tail-sample-dir.")
+
+    return w1_dir, tail_dir
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -124,12 +204,7 @@ def save_json(path: Path, obj: Any) -> None:
 
 
 def resolve_path(path_str: str, sample_dir: Path) -> Path:
-    """Resolve paths stored in metadata.json.
-
-    sample.py may store paths as absolute paths, project-root-relative paths,
-    or sample-directory-relative paths. This function tries the common cases
-    and returns the first existing path.
-    """
+    """Resolve paths stored in metadata.json."""
     path = Path(path_str)
     if path.is_absolute():
         return path
@@ -144,8 +219,21 @@ def resolve_path(path_str: str, sample_dir: Path) -> Path:
         if candidate.exists():
             return candidate
 
-    # Return the project-root interpretation for a clear downstream error.
     return candidates[0]
+
+
+def load_metadata(sample_dir: Path) -> dict[str, Any]:
+    """Load metadata.json from a sample directory."""
+    metadata_path = sample_dir / "metadata.json"
+    if not metadata_path.exists():
+        raise FileNotFoundError(f"metadata.json not found: {metadata_path}")
+
+    metadata = load_json(metadata_path)
+    space = metadata.get("space", "z")
+    if space != "z":
+        raise ValueError(f"This script expects z-space samples, but metadata space is '{space}'.")
+
+    return metadata
 
 
 def load_prepared_pack(metadata: dict[str, Any], sample_dir: Path) -> tuple[Path, dict[str, Any]]:
@@ -205,11 +293,6 @@ def load_generated_samples(metadata: dict[str, Any], sample_dir: Path) -> dict[s
     return samples
 
 
-# -----------------------------------------------------------------------------
-# Metric functions
-# -----------------------------------------------------------------------------
-
-
 def inverse_z_1d(z: np.ndarray, mean: float, std: float) -> np.ndarray:
     """Transform z-space samples back to raw-space using train statistics."""
     return np.asarray(z, dtype=np.float64).reshape(-1) * float(std) + float(mean)
@@ -221,11 +304,7 @@ def wasserstein1_1d(
     max_samples: int = 1_000_000,
     seed: int = 0,
 ) -> float:
-    """Compute the empirical 1D Wasserstein-1 distance.
-
-    For one-dimensional empirical distributions with equal sample size, W1 is
-    the mean absolute difference between sorted samples.
-    """
+    """Compute the empirical 1D Wasserstein-1 distance."""
     rng = np.random.default_rng(seed)
 
     x = np.asarray(x, dtype=np.float64).reshape(-1)
@@ -255,15 +334,7 @@ def theoretical_tail_thresholds(
     scale: float,
     mode: str,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return theoretical thresholds and tail probabilities.
-
-    For mode='two-sided', the threshold u is chosen so that
-        P(|X - loc| > u - loc) = 1 - q
-    for a Student-t distribution with location loc and scale scale.
-
-    In the default experiment loc=0 and scale=1, this reduces to the original
-    criterion P(|X| > u) = 1 - q.
-    """
+    """Return theoretical thresholds and tail probabilities."""
     if df <= 0:
         raise ValueError("df must be positive.")
     if scale <= 0:
@@ -301,9 +372,41 @@ def empirical_tail_probability(x: np.ndarray, threshold: float, loc: float, mode
     raise ValueError("mode must be 'right', 'left', or 'two-sided'.")
 
 
-# -----------------------------------------------------------------------------
-# Table construction and saving
-# -----------------------------------------------------------------------------
+def split_into_tail_batches(
+    x: np.ndarray,
+    n_batches: int,
+    batch_size: int,
+    policy: str,
+) -> list[np.ndarray]:
+    """Split samples into fixed-size batches for tail evaluation."""
+    if n_batches <= 0:
+        raise ValueError("n_batches must be positive.")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive.")
+
+    x = np.asarray(x, dtype=np.float64).reshape(-1)
+    required = n_batches * batch_size
+
+    if len(x) < required:
+        if policy == "error":
+            raise ValueError(
+                f"Not enough samples for tail evaluation: required {required}, got {len(x)}. "
+                "Either generate more samples with sample.py or use smaller "
+                "--tail-n-batches/--tail-batch-size."
+            )
+        if policy == "truncate":
+            n_full = len(x) // batch_size
+            if n_full == 0:
+                raise ValueError(
+                    f"Not enough samples for even one full tail batch: "
+                    f"batch_size={batch_size}, got {len(x)}."
+                )
+            n_batches = n_full
+        else:
+            raise ValueError("policy must be 'error' or 'truncate'.")
+
+    x = x[: n_batches * batch_size]
+    return [x[i * batch_size : (i + 1) * batch_size] for i in range(n_batches)]
 
 
 def compute_w1_rows(
@@ -350,8 +453,11 @@ def compute_tail_rows(
     loc_theory: float,
     scale_theory: float,
     mode: str,
+    n_batches: int,
+    batch_size: int,
+    batch_policy: str,
 ) -> list[dict[str, Any]]:
-    """Compute raw-space tail probability rows."""
+    """Compute raw-space tail probability rows with batch averaging."""
     q_array = np.asarray(q_list, dtype=np.float64)
     thresholds, p_theory = theoretical_tail_thresholds(
         q_list=q_array,
@@ -368,18 +474,31 @@ def compute_tail_rows(
             continue
 
         samples_raw = inverse_z_1d(samples_z[key], mean=train_mean, std=train_std)
+        batches = split_into_tail_batches(
+            samples_raw,
+            n_batches=n_batches,
+            batch_size=batch_size,
+            policy=batch_policy,
+        )
 
-        for q, threshold, p_th in zip(q_array, thresholds, p_theory):
-            p_hat = empirical_tail_probability(
-                samples_raw,
-                threshold=float(threshold),
-                loc=loc_theory,
-                mode=mode,
-            )
-            signed_err = p_hat - float(p_th)
+        prob_by_batch = np.zeros((len(batches), len(q_array)), dtype=np.float64)
+        for b, batch in enumerate(batches):
+            for i, threshold in enumerate(thresholds):
+                prob_by_batch[b, i] = empirical_tail_probability(
+                    batch,
+                    threshold=float(threshold),
+                    loc=loc_theory,
+                    mode=mode,
+                )
+
+        p_mean = prob_by_batch.mean(axis=0)
+        p_std = prob_by_batch.std(axis=0, ddof=0)
+
+        for i, q in enumerate(q_array):
+            signed_err = p_mean[i] - float(p_theory[i])
             abs_err = abs(signed_err)
-            signed_rel_err = signed_err / max(float(p_th), 1e-300)
-            abs_rel_err = abs_err / max(float(p_th), 1e-300)
+            signed_rel_err = signed_err / max(float(p_theory[i]), 1e-300)
+            abs_rel_err = abs_err / max(float(p_theory[i]), 1e-300)
 
             rows.append(
                 {
@@ -388,15 +507,19 @@ def compute_tail_rows(
                     "space": "raw",
                     "tail_mode": mode,
                     "q": float(q),
-                    "threshold": float(threshold),
-                    "p_theory": float(p_th),
-                    "p_empirical": float(p_hat),
+                    "threshold": float(thresholds[i]),
+                    "p_theory": float(p_theory[i]),
+                    "p_mean": float(p_mean[i]),
+                    "p_std": float(p_std[i]),
                     "signed_error": float(signed_err),
                     "absolute_error": float(abs_err),
                     "signed_relative_error": float(signed_rel_err),
                     "absolute_relative_error": float(abs_rel_err),
-                    "log10_p_empirical": float(np.log10(max(p_hat, 1e-300))),
-                    "n_generated": int(len(samples_raw)),
+                    "log10_p_mean": float(np.log10(max(p_mean[i], 1e-300))),
+                    "n_batches": int(len(batches)),
+                    "batch_size": int(batch_size),
+                    "n_generated_used": int(len(batches) * batch_size),
+                    "n_generated_available": int(len(samples_raw)),
                 }
             )
 
@@ -420,7 +543,11 @@ def save_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def print_w1_table(rows: list[dict[str, Any]]) -> None:
     """Print W1 results."""
-    print("\n=== W1 distance in z-space ===")
+    if len(rows) == 0:
+        return
+
+    print()
+    print("=== W1 distance in z-space ===")
     print(f"{'sampler':<24} {'W1':>12} {'n_gen':>12} {'n_ref':>12}")
     print("-" * 66)
     for row in rows:
@@ -434,116 +561,150 @@ def print_w1_table(rows: list[dict[str, Any]]) -> None:
 
 def print_tail_table(rows: list[dict[str, Any]]) -> None:
     """Print raw-space tail probability results."""
+    if len(rows) == 0:
+        return
+
     q_values = sorted(set(row["q"] for row in rows))
 
     for q in q_values:
         subset = [row for row in rows if row["q"] == q]
         ref = subset[0]
+        print()
         print(
-            f"\n=== q = {q:g} | threshold = {ref['threshold']:.6g} "
+            f"=== q = {q:g} | threshold = {ref['threshold']:.6g} "
             f"| p_theory = {ref['p_theory']:.3e} "
-            f"| mode = {ref['tail_mode']} ==="
+            f"| mode = {ref['tail_mode']} "
+            f"| batches = {ref['n_batches']} x {ref['batch_size']} ==="
         )
         print(
-            f"{'sampler':<24} {'p_emp':>12} {'log10(p)':>12} "
-            f"{'rel_err':>12} {'abs_rel':>12}"
+            f"{'sampler':<24} {'p_mean':>12} {'p_std':>12} "
+            f"{'log10(p)':>12} {'rel_err':>12}"
         )
         print("-" * 82)
         for row in subset:
             print(
                 f"{row['sampler']:<24} "
-                f"{row['p_empirical']:>12.4e} "
-                f"{row['log10_p_empirical']:>12.5g} "
-                f"{row['signed_relative_error']:>12.5g} "
-                f"{row['absolute_relative_error']:>12.5g}"
+                f"{row['p_mean']:>12.4e} "
+                f"{row['p_std']:>12.4e} "
+                f"{row['log10_p_mean']:>12.5g} "
+                f"{row['signed_relative_error']:>12.5g}"
             )
-
-
-# -----------------------------------------------------------------------------
-# Main
-# -----------------------------------------------------------------------------
 
 
 def main() -> None:
     """Run quantitative evaluation."""
     args = parse_args()
+    metrics = selected_metrics(args.metrics)
+    w1_sample_dir, tail_sample_dir = resolve_metric_sample_dirs(args)
 
-    sample_dir = args.sample_dir.resolve()
-    metadata_path = sample_dir / "metadata.json"
-    if not metadata_path.exists():
-        raise FileNotFoundError(f"metadata.json not found: {metadata_path}")
+    if tail_sample_dir is not None:
+        default_output_base = tail_sample_dir.resolve()
+    elif w1_sample_dir is not None:
+        default_output_base = w1_sample_dir.resolve()
+    else:
+        raise ValueError("At least one sample directory is required.")
 
-    output_dir = args.output_dir if args.output_dir is not None else sample_dir / "metrics"
+    output_dir = args.output_dir if args.output_dir is not None else default_output_base / "metrics"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    metadata = load_json(metadata_path)
-    space = metadata.get("space", "z")
-    if space != "z":
-        raise ValueError(f"This script expects z-space samples, but metadata space is '{space}'.")
+    w1_rows: list[dict[str, Any]] = []
+    tail_rows: list[dict[str, Any]] = []
+    metadata_summary: dict[str, Any] = {}
 
-    pt_path, pack = load_prepared_pack(metadata, sample_dir)
-    reference_z = load_reference_test_z(pack)
-    train_mean, train_std = load_train_stats(pack)
-    nu_data, mu_data, sigma_data = load_distribution_params(pack)
+    if "w1" in metrics:
+        assert w1_sample_dir is not None
+        w1_sample_dir = w1_sample_dir.resolve()
+        w1_metadata = load_metadata(w1_sample_dir)
+        w1_pt_path, w1_pack = load_prepared_pack(w1_metadata, w1_sample_dir)
+        w1_reference_z = load_reference_test_z(w1_pack)
+        w1_samples_z = load_generated_samples(w1_metadata, w1_sample_dir)
 
-    df_theory = float(args.df_theory) if args.df_theory is not None else float(nu_data)
-    loc_theory = float(mu_data)
-    scale_theory = float(sigma_data)
+        print(f"W1_SAMPLE_DIR   : {w1_sample_dir}")
+        print(f"W1_DATA_PT_PATH : {w1_pt_path}")
+        print(f"W1 reference_z  : shape={w1_reference_z.shape}")
+        for key, values in w1_samples_z.items():
+            print(f"W1 {key:11s}: shape={values.shape}")
 
-    samples_z = load_generated_samples(metadata, sample_dir)
+        w1_rows = compute_w1_rows(
+            reference_z=w1_reference_z,
+            samples_z=w1_samples_z,
+            max_samples=args.max_w1_samples,
+            seed=args.w1_seed,
+        )
+        metadata_summary["w1_sample_dir"] = str(w1_sample_dir)
+        metadata_summary["w1_data_pt_path"] = str(w1_pt_path)
 
-    print(f"SAMPLE_DIR     : {sample_dir}")
-    print(f"OUTPUT_DIR     : {output_dir.resolve()}")
-    print(f"DATA_PT_PATH   : {pt_path}")
-    print(f"reference_z    : shape={reference_z.shape}")
-    print(f"train mean/std : {train_mean:.8g}, {train_std:.8g}")
-    print(f"theory params  : df={df_theory}, loc={loc_theory}, scale={scale_theory}")
-    for key, values in samples_z.items():
-        print(f"{key:14s}: shape={values.shape}")
+    if "tail" in metrics:
+        assert tail_sample_dir is not None
+        tail_sample_dir = tail_sample_dir.resolve()
+        tail_metadata = load_metadata(tail_sample_dir)
+        tail_pt_path, tail_pack = load_prepared_pack(tail_metadata, tail_sample_dir)
+        train_mean, train_std = load_train_stats(tail_pack)
+        nu_data, mu_data, sigma_data = load_distribution_params(tail_pack)
+        tail_samples_z = load_generated_samples(tail_metadata, tail_sample_dir)
 
-    w1_rows = compute_w1_rows(
-        reference_z=reference_z,
-        samples_z=samples_z,
-        max_samples=args.max_w1_samples,
-        seed=args.w1_seed,
-    )
-    tail_rows = compute_tail_rows(
-        samples_z=samples_z,
-        train_mean=train_mean,
-        train_std=train_std,
-        q_list=args.q_list,
-        df_theory=df_theory,
-        loc_theory=loc_theory,
-        scale_theory=scale_theory,
-        mode=args.tail_mode,
-    )
+        df_theory = float(args.df_theory) if args.df_theory is not None else float(nu_data)
+        loc_theory = float(mu_data)
+        scale_theory = float(sigma_data)
+
+        print(f"TAIL_SAMPLE_DIR   : {tail_sample_dir}")
+        print(f"TAIL_DATA_PT_PATH : {tail_pt_path}")
+        print(f"train mean/std    : {train_mean:.8g}, {train_std:.8g}")
+        print(f"theory params     : df={df_theory}, loc={loc_theory}, scale={scale_theory}")
+        print(f"tail batches      : {args.tail_n_batches} x {args.tail_batch_size}")
+        for key, values in tail_samples_z.items():
+            print(f"TAIL {key:9s}: shape={values.shape}")
+
+        tail_rows = compute_tail_rows(
+            samples_z=tail_samples_z,
+            train_mean=train_mean,
+            train_std=train_std,
+            q_list=args.q_list,
+            df_theory=df_theory,
+            loc_theory=loc_theory,
+            scale_theory=scale_theory,
+            mode=args.tail_mode,
+            n_batches=args.tail_n_batches,
+            batch_size=args.tail_batch_size,
+            batch_policy=args.tail_batch_policy,
+        )
+        metadata_summary["tail_sample_dir"] = str(tail_sample_dir)
+        metadata_summary["tail_data_pt_path"] = str(tail_pt_path)
+        metadata_summary["train_raw_mean"] = train_mean
+        metadata_summary["train_raw_std"] = train_std
+        metadata_summary["theory"] = {
+            "df": df_theory,
+            "loc": loc_theory,
+            "scale": scale_theory,
+            "tail_mode": args.tail_mode,
+            "q_list": list(args.q_list),
+        }
+        metadata_summary["tail_batching"] = {
+            "n_batches": int(args.tail_n_batches),
+            "batch_size": int(args.tail_batch_size),
+            "policy": args.tail_batch_policy,
+        }
 
     print_w1_table(w1_rows)
     print_tail_table(tail_rows)
 
-    save_csv(output_dir / "w1_metrics.csv", w1_rows)
-    save_csv(output_dir / "tail_metrics.csv", tail_rows)
+    if len(w1_rows) > 0:
+        save_csv(output_dir / "w1_metrics.csv", w1_rows)
+    if len(tail_rows) > 0:
+        save_csv(output_dir / "tail_metrics.csv", tail_rows)
 
     if args.save_json:
         save_json(
             output_dir / "metrics.json",
             {
-                "sample_dir": str(sample_dir),
-                "data_pt_path": str(pt_path),
-                "train_raw_mean": train_mean,
-                "train_raw_std": train_std,
-                "theory": {
-                    "df": df_theory,
-                    "loc": loc_theory,
-                    "scale": scale_theory,
-                    "tail_mode": args.tail_mode,
-                    "q_list": list(args.q_list),
-                },
+                **metadata_summary,
+                "metrics_requested": sorted(metrics),
                 "w1": w1_rows,
                 "tail": tail_rows,
             },
         )
 
+    print(f"OUTPUT_DIR: {output_dir.resolve()}")
     print("Metric evaluation complete.")
 
 
