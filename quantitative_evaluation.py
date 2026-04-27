@@ -30,7 +30,7 @@ Examples:
     python quantitative_evaluation.py \
         --w1-sample-dir samples_qq/xxx_trainseed4 \
         --tail-sample-dir samples_metrics/yyy_trainseed4 \
-        --q-list 0.995 0.999 \
+        --q-list 0.999 \
         --tail-mode two-sided \
         --tail-n-batches 10 \
         --tail-batch-size 1000000
@@ -56,13 +56,13 @@ from scipy.stats import t as student_t
 
 
 SAMPLER_LABELS = {
-    "t_ode": "t-ODE(Heun)",
-    "t_sde": "t-stateSDE(dep)",
-    "t_sde_coeff1": "t-stateSDE(coeff=1)",
-    "g_sde": "g-SDE(Euler)",
+    "g_sde": "VE-SDE",
+    "t_ode": "t-ODE",
+    "t_sde": "t-SDE",
+    "t_sde_coeff1": "Ablated t-SDE",
 }
 
-SAMPLER_ORDER = ["t_ode", "t_sde", "t_sde_coeff1", "g_sde"]
+SAMPLER_ORDER = ["g_sde", "t_ode", "t_sde", "t_sde_coeff1"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -236,6 +236,78 @@ def load_metadata(sample_dir: Path) -> dict[str, Any]:
     return metadata
 
 
+def compare_metadata_values(
+    w1_metadata: dict[str, Any],
+    tail_metadata: dict[str, Any],
+    keys: list[str],
+) -> list[str]:
+    """Return mismatch messages for selected metadata keys."""
+    mismatches: list[str] = []
+
+    for key in keys:
+        w1_value = w1_metadata.get(key, None)
+        tail_value = tail_metadata.get(key, None)
+
+        if str(w1_value) != str(tail_value):
+            mismatches.append(
+                f"{key}: W1={w1_value!r}, tail={tail_value!r}"
+            )
+
+    return mismatches
+
+
+def check_w1_tail_metadata_consistency(
+    w1_metadata: dict[str, Any],
+    tail_metadata: dict[str, Any],
+) -> None:
+    """Check that W1 and tail samples come from the same experimental setup.
+
+    The number of generated samples, sample batch size, and sampling seed are
+    allowed to differ because W1 and tail metrics may intentionally use sample
+    directories with different sizes.
+    """
+    keys_to_match = [
+        "space",
+        "train_seed",
+        "data_pt_path",
+        "t_run_dir",
+        "g_run_dir",
+        "t_ckpt",
+        "g_ckpt",
+        "sigma_max",
+        "sigma_min",
+        "n_steps_ode",
+        "n_steps_sde",
+        "rho",
+        "nu_train",
+        "nu_init_ode",
+        "nu_init_sde",
+        "nu_coeff",
+    ]
+
+    mismatches = compare_metadata_values(w1_metadata, tail_metadata, keys_to_match)
+
+    if len(mismatches) > 0:
+        message = "\n".join(f"  - {m}" for m in mismatches)
+        raise ValueError(
+            "W1 and tail sample directories appear to come from different "
+            "experimental settings:\n"
+            f"{message}\n"
+            "If this is intentional, use matching sample directories or relax "
+            "the consistency check."
+        )
+
+
+def check_finite(name: str, values: np.ndarray) -> None:
+    """Check that all values are finite."""
+    values = np.asarray(values)
+    finite_mask = np.isfinite(values)
+
+    if not finite_mask.all():
+        n_bad = int((~finite_mask).sum())
+        raise ValueError(f"{name} contains {n_bad} non-finite values.")
+
+
 def load_prepared_pack(metadata: dict[str, Any], sample_dir: Path) -> tuple[Path, dict[str, Any]]:
     """Load the prepared .pt file referenced by metadata.json."""
     data_pt_path = metadata.get("data_pt_path", "")
@@ -252,13 +324,21 @@ def load_prepared_pack(metadata: dict[str, Any], sample_dir: Path) -> tuple[Path
 
 def load_reference_test_z(pack: dict[str, Any]) -> np.ndarray:
     """Load the reference test set in z-space from the prepared .pt pack."""
-    return pack["test"].numpy().astype(np.float64).reshape(-1)
+    reference = pack["test"].numpy().astype(np.float64).reshape(-1)
+    check_finite("reference test z", reference)
+    return reference
 
 
 def load_train_stats(pack: dict[str, Any]) -> tuple[float, float]:
     """Load train-set raw mean and std used for z-score normalization."""
     mean = float(pack["train_raw_mean"].numpy().reshape(-1)[0])
     std = float(pack["train_raw_std"].numpy().reshape(-1)[0])
+
+    if not np.isfinite(mean):
+        raise ValueError(f"train_raw_mean is non-finite: {mean}")
+    if not np.isfinite(std) or std <= 0.0:
+        raise ValueError(f"train_raw_std must be finite and positive, got: {std}")
+
     return mean, std
 
 
@@ -267,6 +347,14 @@ def load_distribution_params(pack: dict[str, Any]) -> tuple[float, float, float]
     nu = float(pack.get("nu", 3.0))
     mu = float(pack.get("mu", 0.0))
     sigma = float(pack.get("sigma", 1.0))
+
+    if not np.isfinite(nu) or nu <= 0.0:
+        raise ValueError(f"nu must be finite and positive, got: {nu}")
+    if not np.isfinite(mu):
+        raise ValueError(f"mu must be finite, got: {mu}")
+    if not np.isfinite(sigma) or sigma <= 0.0:
+        raise ValueError(f"sigma must be finite and positive, got: {sigma}")
+
     return nu, mu, sigma
 
 
@@ -285,7 +373,9 @@ def load_generated_samples(metadata: dict[str, Any], sample_dir: Path) -> dict[s
         if not path.exists():
             raise FileNotFoundError(f"Sample file not found for {name}: {path}")
 
-        samples[name] = np.load(path).astype(np.float64).reshape(-1)
+        values = np.load(path).astype(np.float64).reshape(-1)
+        check_finite(f"generated samples {name}", values)
+        samples[name] = values
 
     if len(samples) == 0:
         raise ValueError("No recognized sampler files were found in metadata.json.")
@@ -295,7 +385,9 @@ def load_generated_samples(metadata: dict[str, Any], sample_dir: Path) -> dict[s
 
 def inverse_z_1d(z: np.ndarray, mean: float, std: float) -> np.ndarray:
     """Transform z-space samples back to raw-space using train statistics."""
-    return np.asarray(z, dtype=np.float64).reshape(-1) * float(std) + float(mean)
+    raw = np.asarray(z, dtype=np.float64).reshape(-1) * float(std) + float(mean)
+    check_finite("inverse-transformed raw samples", raw)
+    return raw
 
 
 def wasserstein1_1d(
@@ -309,6 +401,9 @@ def wasserstein1_1d(
 
     x = np.asarray(x, dtype=np.float64).reshape(-1)
     y = np.asarray(y, dtype=np.float64).reshape(-1)
+
+    check_finite("W1 x", x)
+    check_finite("W1 y", y)
 
     n = min(int(max_samples), len(x), len(y))
     if n <= 0:
@@ -342,6 +437,9 @@ def theoretical_tail_thresholds(
 
     q_list = np.asarray(q_list, dtype=np.float64)
 
+    if not np.all((0.0 < q_list) & (q_list < 1.0)):
+        raise ValueError("All q values must satisfy 0 < q < 1.")
+
     if mode == "right":
         thresholds = loc + scale * student_t.ppf(q_list, df)
         tail_probs = 1.0 - q_list
@@ -354,12 +452,16 @@ def theoretical_tail_thresholds(
     else:
         raise ValueError("mode must be 'right', 'left', or 'two-sided'.")
 
+    check_finite("theoretical thresholds", thresholds)
+    check_finite("theoretical tail probabilities", tail_probs)
+
     return thresholds, tail_probs
 
 
 def empirical_tail_probability(x: np.ndarray, threshold: float, loc: float, mode: str) -> float:
     """Compute empirical tail probability at a given threshold."""
     x = np.asarray(x, dtype=np.float64).reshape(-1)
+    check_finite("tail evaluation samples", x)
 
     if mode == "right":
         return float((x > threshold).mean())
@@ -385,6 +487,8 @@ def split_into_tail_batches(
         raise ValueError("batch_size must be positive.")
 
     x = np.asarray(x, dtype=np.float64).reshape(-1)
+    check_finite("tail samples before batching", x)
+
     required = n_batches * batch_size
 
     if len(x) < required:
@@ -548,11 +652,11 @@ def print_w1_table(rows: list[dict[str, Any]]) -> None:
 
     print()
     print("=== W1 distance in z-space ===")
-    print(f"{'sampler':<24} {'W1':>12} {'n_gen':>12} {'n_ref':>12}")
-    print("-" * 66)
+    print(f"{'sampler':<20} {'W1':>12} {'n_gen':>12} {'n_ref':>12}")
+    print("-" * 60)
     for row in rows:
         print(
-            f"{row['sampler']:<24} "
+            f"{row['sampler']:<20} "
             f"{row['w1']:>12.6g} "
             f"{row['n_generated']:>12d} "
             f"{row['n_reference']:>12d}"
@@ -577,13 +681,13 @@ def print_tail_table(rows: list[dict[str, Any]]) -> None:
             f"| batches = {ref['n_batches']} x {ref['batch_size']} ==="
         )
         print(
-            f"{'sampler':<24} {'p_mean':>12} {'p_std':>12} "
+            f"{'sampler':<20} {'p_mean':>12} {'p_std':>12} "
             f"{'log10(p)':>12} {'rel_err':>12}"
         )
-        print("-" * 82)
+        print("-" * 78)
         for row in subset:
             print(
-                f"{row['sampler']:<24} "
+                f"{row['sampler']:<20} "
                 f"{row['p_mean']:>12.4e} "
                 f"{row['p_std']:>12.4e} "
                 f"{row['log10_p_mean']:>12.5g} "
@@ -611,6 +715,9 @@ def main() -> None:
     tail_rows: list[dict[str, Any]] = []
     metadata_summary: dict[str, Any] = {}
 
+    w1_metadata: dict[str, Any] | None = None
+    tail_metadata: dict[str, Any] | None = None
+
     if "w1" in metrics:
         assert w1_sample_dir is not None
         w1_sample_dir = w1_sample_dir.resolve()
@@ -623,7 +730,7 @@ def main() -> None:
         print(f"W1_DATA_PT_PATH : {w1_pt_path}")
         print(f"W1 reference_z  : shape={w1_reference_z.shape}")
         for key, values in w1_samples_z.items():
-            print(f"W1 {key:11s}: shape={values.shape}")
+            print(f"W1 {key:14s}: shape={values.shape}")
 
         w1_rows = compute_w1_rows(
             reference_z=w1_reference_z,
@@ -653,7 +760,7 @@ def main() -> None:
         print(f"theory params     : df={df_theory}, loc={loc_theory}, scale={scale_theory}")
         print(f"tail batches      : {args.tail_n_batches} x {args.tail_batch_size}")
         for key, values in tail_samples_z.items():
-            print(f"TAIL {key:9s}: shape={values.shape}")
+            print(f"TAIL {key:12s}: shape={values.shape}")
 
         tail_rows = compute_tail_rows(
             samples_z=tail_samples_z,
@@ -684,6 +791,10 @@ def main() -> None:
             "batch_size": int(args.tail_batch_size),
             "policy": args.tail_batch_policy,
         }
+
+    if w1_metadata is not None and tail_metadata is not None:
+        check_w1_tail_metadata_consistency(w1_metadata, tail_metadata)
+        print("W1/tail metadata consistency check: passed")
 
     print_w1_table(w1_rows)
     print_tail_table(tail_rows)
