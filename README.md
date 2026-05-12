@@ -100,6 +100,7 @@ python quantitative_evaluation.py \
   --tail-mode two-sided \
   --tail-n-batches 10 \
   --tail-batch-size 1000000
+```
 
 ## Samplers
 
