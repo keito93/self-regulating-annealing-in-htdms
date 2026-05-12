@@ -27,3 +27,21 @@ The repository reproduces the synthetic Student's t experiment used to evaluate 
 ├── requirements.txt             # Python dependencies
 ├── LICENSE
 └── README.md
+
+
+## 3. Installation
+
+Keep it simple:
+
+```markdown
+## Installation
+
+Clone the repository:
+
+```bash
+git clone https://github.com/keito93/self-regulating-annealing-in-htdms.git
+cd self-regulating-annealing-in-htdms
+
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
