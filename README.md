@@ -91,9 +91,15 @@ Replace `<sample-directory>` with the directory created by `sample.py`.
 
 ### 5. Compute quantitative metrics
 
+For the tail-probability metric reported in the paper, use:
+
 ```bash
-python quantitative_evaluation.py --sample-dir samples/<sample-directory>
-```
+python quantitative_evaluation.py \
+  --sample-dir samples/<sample-directory> \
+  --q-list 0.999 \
+  --tail-mode two-sided \
+  --tail-n-batches 10 \
+  --tail-batch-size 1000000
 
 ## Samplers
 
