@@ -14,25 +14,62 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
         description="Numerical demo of self-regulating annealing."
     )
-    parser.add_argument("--output-dir", type=Path, default=Path("figures"))
-    parser.add_argument("--a", type=float, default=10.0)
-    parser.add_argument("--sigma", type=float, default=1.0)
-    parser.add_argument("--nu", type=float, default=3.0)
-    parser.add_argument("--d", type=int, default=1)
-    parser.add_argument("--n-steps", type=int, default=2000)
-    parser.add_argument("--seed", type=int, default=12345)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("figures"),
+        help="Directory where generated figures are saved.",
+    )
+    parser.add_argument(
+        "--a",
+        type=float,
+        default=10.0,
+        help="Location parameter of the symmetric two-point distribution.",
+    )
+    parser.add_argument(
+        "--sigma",
+        type=float,
+        default=1.0,
+        help="Noise scale parameter.",
+    )
+    parser.add_argument(
+        "--nu",
+        type=float,
+        default=3.0,
+        help="Degrees of freedom of the Student-t distribution.",
+    )
+    parser.add_argument(
+        "--d",
+        type=int,
+        default=1,
+        help="Data dimension. This demo is intended for d=1.",
+    )
+    parser.add_argument(
+        "--n-steps",
+        type=int,
+        default=2000,
+        help="Number of Euler-Maruyama steps for trajectory simulation.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=12345,
+        help="Random seed for Brownian increments.",
+    )
     return parser.parse_args()
 
 
 def setup_matplotlib() -> None:
+    """Set paper-friendly Matplotlib defaults."""
     plt.rcParams.update(
         {
             "pdf.fonttype": 42,
@@ -47,7 +84,13 @@ def setup_matplotlib() -> None:
 
 
 def exp_gamma(y: np.ndarray, gamma: float) -> np.ndarray:
-    """Generalized exponential with domain handling."""
+    """Generalized exponential with domain handling.
+
+    exp_gamma(y) = (1 + gamma y)^(1 / gamma)
+
+    The value is defined only when 1 + gamma y > 0. Outside the domain,
+    this function returns NaN.
+    """
     y = np.asarray(y, dtype=float)
     base = 1.0 + gamma * y
 
@@ -66,12 +109,25 @@ def tanh_gamma(y: np.ndarray, gamma: float) -> np.ndarray:
 
     out = np.full_like(y, np.nan, dtype=float)
     valid = np.isfinite(ey) & np.isfinite(emy) & ((ey + emy) != 0.0)
+
     out[valid] = (ey[valid] - emy[valid]) / (ey[valid] + emy[valid])
     return out
 
 
-def beta_t(x: np.ndarray, t: float, a: float, sigma: float, nu: float, d: int) -> np.ndarray:
-    """State-dependent inverse-temperature factor."""
+def beta_t(
+    x: np.ndarray,
+    t: float,
+    a: float,
+    sigma: float,
+    nu: float,
+    d: int,
+) -> np.ndarray:
+    """State-dependent inverse-temperature factor.
+
+    beta_t(x) = (nu + d) / (nu sigma^2 t + ||x||^2 + ||a||^2)
+
+    In this script, d=1 and x,a are scalar.
+    """
     sigma2 = sigma**2
     return (nu + d) / (nu * sigma2 * t + x**2 + a**2)
 
@@ -100,14 +156,28 @@ def drift_and_alpha(
     d: int,
     gamma: float,
 ) -> tuple[float, float]:
-    """Return drift and state-dependent coefficient alpha."""
-    x_arr = np.array([x], dtype=float)
-    target = denoiser_target(x_arr, t, a=a, sigma=sigma, nu=nu, d=d, gamma=gamma)[0]
+    """Return the drift and state-dependent coefficient alpha."""
+    if t <= 0.0:
+        raise ValueError("t must be positive during SDE simulation.")
 
+    x_arr = np.array([x], dtype=float)
+    target = denoiser_target(
+        x_arr,
+        t,
+        a=a,
+        sigma=sigma,
+        nu=nu,
+        d=d,
+        gamma=gamma,
+    )[0]
+
+    # VE-SDE drift for sigma_t = sigma * sqrt(t).
     drift = (x - target) / t
 
-    # For sigma_t = sigma * sqrt(t), Delta_t^2 = |x - target|^2 / (sigma^2 t).
+    # Delta_t^2 = |x - target|^2 / (sigma^2 t).
     delta2 = (x - target) ** 2 / (sigma**2 * t)
+
+    # alpha(Delta_t^2) = sqrt((nu + Delta_t^2) / (nu + d - 2)).
     alpha = np.sqrt((nu + delta2) / (nu + d - 2.0))
 
     return float(drift), float(alpha)
@@ -124,7 +194,7 @@ def simulate_trajectory(
     gamma: float,
     use_state_dependent_alpha: bool,
 ) -> np.ndarray:
-    """Simulate the one-dimensional SDE trajectory."""
+    """Simulate one trajectory using Euler-Maruyama."""
     x = np.zeros_like(t_grid)
     x[0] = x_init
 
@@ -132,6 +202,7 @@ def simulate_trajectory(
 
     for j in range(len(t_grid) - 1):
         t = float(t_grid[j])
+
         drift, alpha = drift_and_alpha(
             x=float(x[j]),
             t=t,
@@ -160,7 +231,15 @@ def find_fixed_points(
     gamma: float,
 ) -> np.ndarray:
     """Find fixed points of x = E[x0 | xt] by sign changes."""
-    target = denoiser_target(x_grid, t, a=a, sigma=sigma, nu=nu, d=d, gamma=gamma)
+    target = denoiser_target(
+        x_grid,
+        t,
+        a=a,
+        sigma=sigma,
+        nu=nu,
+        d=d,
+        gamma=gamma,
+    )
     h = x_grid - target
 
     valid = np.isfinite(h)
@@ -168,6 +247,9 @@ def find_fixed_points(
     hs = h[valid]
 
     roots: list[float] = []
+
+    if len(xs) < 2:
+        return np.array([], dtype=float)
 
     # Include exact zeros if they appear on the grid.
     exact = np.where(hs == 0.0)[0]
@@ -188,11 +270,11 @@ def find_fixed_points(
     if len(roots) == 0:
         return np.array([], dtype=float)
 
-    roots = np.array(sorted(roots), dtype=float)
+    roots_array = np.array(sorted(roots), dtype=float)
 
     # Remove near-duplicates.
-    unique_roots = [roots[0]]
-    for root in roots[1:]:
+    unique_roots = [roots_array[0]]
+    for root in roots_array[1:]:
         if abs(root - unique_roots[-1]) > 1e-4:
             unique_roots.append(root)
 
@@ -215,15 +297,37 @@ def plot_fixed_points(
     }
 
     x_grid = np.linspace(-1.2 * a, 1.2 * a, 20001)
+
     lhs = x_grid
-    rhs = denoiser_target(x_grid, t0, a=a, sigma=sigma, nu=nu, d=d, gamma=gamma)
+    rhs = denoiser_target(
+        x_grid,
+        t0,
+        a=a,
+        sigma=sigma,
+        nu=nu,
+        d=d,
+        gamma=gamma,
+    )
+
     fixed_points = find_fixed_points(
-        x_grid, t=t0, a=a, sigma=sigma, nu=nu, d=d, gamma=gamma
+        x_grid,
+        t=t0,
+        a=a,
+        sigma=sigma,
+        nu=nu,
+        d=d,
+        gamma=gamma,
     )
 
     fig, ax = plt.subplots(figsize=(10, 5))
 
-    ax.plot(x_grid, lhs, linewidth=2.5, color=colors["blue"], label=r"$y=x$")
+    ax.plot(
+        x_grid,
+        lhs,
+        linewidth=2.5,
+        color=colors["blue"],
+        label=r"$y=x$",
+    )
     ax.plot(
         x_grid,
         rhs,
@@ -265,13 +369,20 @@ def plot_trajectories(
     n_steps: int,
     seed: int,
 ) -> None:
-    """Plot sample trajectories with and without the state-dependent alpha."""
+    """Plot sample trajectories with and without state-dependent alpha.
+
+    Same color = same initial condition.
+    Solid line = state-dependent alpha.
+    Dashed line = ablated alpha fixed to 1.
+    """
     colors = {
         0.0: "#0072B2",  # blue
         4.0: "#E69F00",  # orange
     }
 
-    t_grid = np.linspace(1.0, 0.0, n_steps + 1)
+    # Avoid t=0 in the simulation because the drift contains 1/t.
+    # The final point is very close to zero.
+    t_grid = np.linspace(1.0, 1.0e-6, n_steps + 1)
     dt = t_grid[1] - t_grid[0]
 
     rng = np.random.default_rng(seed)
@@ -337,171 +448,12 @@ def plot_trajectories(
 
 
 def main() -> None:
+    """Run the numerical experiment and save figures."""
     args = parse_args()
     setup_matplotlib()
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-
-    gamma = -2.0 / (args.nu + args.d)
-
-    plot_fixed_points(
-        output_path=args.output_dir / "fixedpoint.pdf",
-        a=args.a,
-        sigma=args.sigma,
-        nu=args.nu,
-        d=args.d,
-        gamma=gamma,
-        t0=1.0,
-    )
-
-    plot_trajectories(
-        output_path=args.output_dir / "traj.pdf",
-        a=args.a,
-        sigma=args.sigma,
-        nu=args.nu,
-        d=args.d,
-        gamma=gamma,
-        n_steps=args.n_steps,
-        seed=args.seed,
-    )
-
-    print(f"Saved figures to: {args.output_dir.resolve()}")
-
-
-if __name__ == "__main__":
-    main()            nu=nu,
-            d=d,
-            gamma=gamma,
-            use_state_dependent_alpha=True,
-        )
-
-        x_without = simulate_trajectory(
-            x_init=x_init,
-            dW=dW,
-            t_grid=t_grid,
-            a=a,
-            sigma=sigma,
-            nu=nu,
-            d=d,
-            gamma=gamma,
-            use_state_dependent_alpha=False,
-        )
-
-        color = colors[x_init]
-
-        ax.plot(
-            t_grid,
-            x_with,
-            linewidth=2.0,
-            color=color,
-            linestyle="-",
-            label=rf"$x_0={x_init:g}$",
-        )
-
-        ax.plot(
-            t_grid,
-            x_without,
-            linewidth=2.0,
-            color=color,
-            linestyle="--",
-            label=rf"$x_0={x_init:g}$ ($\alpha \equiv 1$)",
-        )
-
-    ax.set_xlabel(r"$t$")
-    ax.set_ylabel(r"$x(t)$")
-    ax.grid(True, linestyle="--", alpha=0.4)
-    ax.legend(loc="upper right", frameon=True)
-
-    fig.tight_layout()
-    fig.savefig(output_path, bbox_inches="tight")
-    plt.close(fig)
-
-
-def plot_trajectories(
-    output_path: Path,
-    a: float,
-    sigma: float,
-    nu: float,
-    d: int,
-    gamma: float,
-    n_steps: int,
-    seed: int,
-) -> None:
-    """Plot sample trajectories with and without the state-dependent alpha."""
-    colors = ["#0072B2", "#E69F00", "#CC79A7", "#56B4E9"]
-
-    t_grid = np.linspace(1.0, 0.0, n_steps + 1)
-    dt = t_grid[1] - t_grid[0]
-
-    rng = np.random.default_rng(seed)
-    dW = np.sqrt(abs(dt)) * rng.standard_normal(n_steps)
-
-    x_init_list = [0.0, 4.0]
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-
-    color_index = 0
-
-    for x_init in x_init_list:
-        x_with = simulate_trajectory(
-            x_init=x_init,
-            dW=dW,
-            t_grid=t_grid,
-            a=a,
-            sigma=sigma,
-            nu=nu,
-            d=d,
-            gamma=gamma,
-            use_state_dependent_alpha=True,
-        )
-
-        x_without = simulate_trajectory(
-            x_init=x_init,
-            dW=dW,
-            t_grid=t_grid,
-            a=a,
-            sigma=sigma,
-            nu=nu,
-            d=d,
-            gamma=gamma,
-            use_state_dependent_alpha=False,
-        )
-
-        c_with = colors[color_index % len(colors)]
-        color_index += 1
-        c_without = colors[color_index % len(colors)]
-        color_index += 1
-
-        ax.plot(
-            t_grid,
-            x_with,
-            linewidth=2.0,
-            color=c_with,
-            label=rf"$x_0={x_init:g}$",
-        )
-
-        ax.plot(
-            t_grid,
-            x_without,
-            linewidth=2.0,
-            linestyle="--",
-            color=c_without,
-            label=rf"$x_0={x_init:g}$ ($\alpha \equiv 1$)",
-        )
-
-    ax.set_xlabel(r"$t$")
-    ax.set_ylabel(r"$x(t)$")
-    ax.grid(True, linestyle="--", alpha=0.4)
-    ax.legend(loc="upper right", frameon=True)
-
-    fig.tight_layout()
-    fig.savefig(output_path, bbox_inches="tight")
-    plt.close(fig)
-
-
-def main() -> None:
-    args = parse_args()
-    setup_matplotlib()
+    if args.nu + args.d - 2.0 <= 0.0:
+        raise ValueError("The coefficient requires nu + d - 2 > 0.")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
