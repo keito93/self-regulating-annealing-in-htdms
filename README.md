@@ -27,11 +27,9 @@ The repository reproduces the synthetic Student's t experiment used to evaluate 
 ├── requirements.txt             # Python dependencies
 ├── LICENSE
 └── README.md
+```
 
-## Installation
+The scripts are organized according to the experimental workflow: data generation, training, sampling, plotting, and quantitative evaluation.
 
-Clone this repository:
-
-```bash
-git clone https://github.com/keito93/self-regulating-annealing-in-htdms.git
-cd self-regulating-annealing-in-htdms
+## Usage
+## Usage
