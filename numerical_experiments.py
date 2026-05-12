@@ -199,6 +199,62 @@ def find_fixed_points(
     return np.array(unique_roots, dtype=float)
 
 
+def plot_fixed_points(
+    output_path: Path,
+    a: float,
+    sigma: float,
+    nu: float,
+    d: int,
+    gamma: float,
+    t0: float = 1.0,
+) -> None:
+    """Plot the fixed-point equation."""
+    colors = {
+        "blue": "#0072B2",
+        "orange": "#E69F00",
+    }
+
+    x_grid = np.linspace(-1.2 * a, 1.2 * a, 20001)
+    lhs = x_grid
+    rhs = denoiser_target(x_grid, t0, a=a, sigma=sigma, nu=nu, d=d, gamma=gamma)
+    fixed_points = find_fixed_points(
+        x_grid, t=t0, a=a, sigma=sigma, nu=nu, d=d, gamma=gamma
+    )
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    ax.plot(x_grid, lhs, linewidth=2.5, color=colors["blue"], label=r"$y=x$")
+    ax.plot(
+        x_grid,
+        rhs,
+        linewidth=2.5,
+        color=colors["orange"],
+        label=r"$a\,\tanh_\gamma(\beta_t(x) a x)$",
+    )
+
+    for i, x_fp in enumerate(fixed_points):
+        ax.plot(
+            x_fp,
+            x_fp,
+            "o",
+            markersize=9,
+            color="black",
+            label="fixed points" if i == 0 else None,
+        )
+
+    ax.axhline(0.0, linestyle=":", linewidth=1.0, color="0.5")
+    ax.axvline(0.0, linestyle=":", linewidth=1.0, color="0.5")
+
+    ax.set_xlabel(r"$x$")
+    ax.set_ylabel("value")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend(loc="best", frameon=True)
+
+    fig.tight_layout()
+    fig.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
+
+
 def plot_trajectories(
     output_path: Path,
     a: float,
@@ -233,6 +289,87 @@ def plot_trajectories(
             a=a,
             sigma=sigma,
             nu=nu,
+            d=d,
+            gamma=gamma,
+            use_state_dependent_alpha=True,
+        )
+
+        x_without = simulate_trajectory(
+            x_init=x_init,
+            dW=dW,
+            t_grid=t_grid,
+            a=a,
+            sigma=sigma,
+            nu=nu,
+            d=d,
+            gamma=gamma,
+            use_state_dependent_alpha=False,
+        )
+
+        color = colors[x_init]
+
+        ax.plot(
+            t_grid,
+            x_with,
+            linewidth=2.0,
+            color=color,
+            linestyle="-",
+            label=rf"$x_0={x_init:g}$",
+        )
+
+        ax.plot(
+            t_grid,
+            x_without,
+            linewidth=2.0,
+            color=color,
+            linestyle="--",
+            label=rf"$x_0={x_init:g}$ ($\alpha \equiv 1$)",
+        )
+
+    ax.set_xlabel(r"$t$")
+    ax.set_ylabel(r"$x(t)$")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend(loc="upper right", frameon=True)
+
+    fig.tight_layout()
+    fig.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def main() -> None:
+    args = parse_args()
+    setup_matplotlib()
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    gamma = -2.0 / (args.nu + args.d)
+
+    plot_fixed_points(
+        output_path=args.output_dir / "fixedpoint.pdf",
+        a=args.a,
+        sigma=args.sigma,
+        nu=args.nu,
+        d=args.d,
+        gamma=gamma,
+        t0=1.0,
+    )
+
+    plot_trajectories(
+        output_path=args.output_dir / "traj.pdf",
+        a=args.a,
+        sigma=args.sigma,
+        nu=args.nu,
+        d=args.d,
+        gamma=gamma,
+        n_steps=args.n_steps,
+        seed=args.seed,
+    )
+
+    print(f"Saved figures to: {args.output_dir.resolve()}")
+
+
+if __name__ == "__main__":
+    main()            nu=nu,
             d=d,
             gamma=gamma,
             use_state_dependent_alpha=True,
