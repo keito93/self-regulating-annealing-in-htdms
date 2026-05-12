@@ -24,6 +24,7 @@ The repository reproduces the synthetic Student's t experiment used to evaluate 
 ├── sample.py                    # Generate samples from trained checkpoints
 ├── qq_plot.py                   # Create Q-Q plots
 ├── quantitative_evaluation.py   # Compute W1 and tail-probability metrics
+├── numerical_experiments.py     # Reproduce fixed-point and trajectory demos
 ├── requirements.txt             # Python dependencies
 ├── LICENSE
 └── README.md
@@ -50,13 +51,15 @@ pip install -r requirements.txt
 
 ## Usage
 
-The basic workflow consists of five steps:
+The basic diffusion-model workflow consists of five steps:
 
 1. Generate the dataset.
 2. Train the denoisers.
 3. Generate samples.
 4. Create Q-Q plots.
 5. Compute quantitative metrics.
+
+The numerical demonstration of the self-regulating annealing mechanism can be run separately.
 
 ### 1. Generate data
 
@@ -100,6 +103,21 @@ python quantitative_evaluation.py \
   --tail-mode two-sided \
   --tail-n-batches 10 \
   --tail-batch-size 1000000
+```
+### 6. Run numerical experiments
+
+The paper also includes numerical experiments illustrating the self-regulating annealing mechanism for a symmetric two-point data distribution. These experiments generate the fixed-point plot and trajectory plot.
+
+```bash
+python numerical_experiments.py
+```
+
+The figures are saved under `figures/`:
+
+```text
+figures/
+├── fixedpoint.pdf
+└── traj.pdf
 ```
 
 ## Samplers
