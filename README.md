@@ -106,6 +106,8 @@ The sampling script generates samples from four samplers:
 | `t_sde.npy` | Proposed t-SDE sampler with the state-dependent coefficient |
 | `t_sde_coeff1.npy` | Ablated t-SDE sampler with the coefficient fixed to 1 |
 
+By default, the `t_sde` sampler uses `nu_coeff = 2.5` for both the Student-t prior initialization and the state-dependent coefficient, following the sampling hyperparameter selected in the paper.
+
 ## Citation
 
 If you use this code, please cite:
