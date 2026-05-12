@@ -32,4 +32,45 @@ The repository reproduces the synthetic Student's t experiment used to evaluate 
 The scripts are organized according to the experimental workflow: data generation, training, sampling, plotting, and quantitative evaluation.
 
 ## Usage
-## Usage
+The basic workflow consists of four steps:
+
+1. Generate the dataset.
+2. Train the denoisers.
+3. Generate samples.
+4. Evaluate the generated samples.
+
+### 1. Generate data
+
+```bash
+python data.py
+```
+
+This creates one-dimensional Student's t datasets and saves the normalized data under `data/normalized_pt/`.
+
+### 2. Train models
+
+```bash
+python run.py
+```
+
+Training outputs are saved under `runs/`.
+
+### 3. Generate samples
+
+```bash
+python sample.py --train-seed 4
+```
+
+Generated samples are saved under `samples/`.
+
+### 4. Create Q-Q plots
+
+```bash
+python qq_plot.py --sample-dir samples/<sample-directory>
+```
+
+### 5. Compute quantitative metrics
+
+```bash
+python quantitative_evaluation.py --sample-dir samples/<sample-directory>
+```
