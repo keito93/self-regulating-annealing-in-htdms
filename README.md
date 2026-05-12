@@ -32,12 +32,14 @@ The repository reproduces the synthetic Student's t experiment used to evaluate 
 The scripts are organized according to the experimental workflow: data generation, training, sampling, plotting, and quantitative evaluation.
 
 ## Usage
+
 The basic workflow consists of four steps:
 
 1. Generate the dataset.
 2. Train the denoisers.
 3. Generate samples.
-4. Evaluate the generated samples.
+4. Create Q-Q plots.
+5. Compute quantitative metrics.
 
 ### 1. Generate data
 
@@ -67,6 +69,7 @@ Generated samples are saved under `samples/`.
 
 ```bash
 python qq_plot.py --sample-dir samples/<sample-directory>
+Replace `<sample-directory>` with the directory created by `sample.py`.
 ```
 
 ### 5. Compute quantitative metrics
@@ -74,3 +77,31 @@ python qq_plot.py --sample-dir samples/<sample-directory>
 ```bash
 python quantitative_evaluation.py --sample-dir samples/<sample-directory>
 ```
+
+## Samplers
+
+The sampling script generates samples from four samplers:
+
+| File | Description |
+|---|---|
+| `g_sde.npy` | Gaussian VE-SDE baseline |
+| `t_ode.npy` | ODE-based sampler for t-EDM |
+| `t_sde.npy` | Proposed t-SDE sampler with the state-dependent coefficient |
+| `t_sde_coeff1.npy` | Ablated t-SDE sampler with the coefficient fixed to 1 |
+
+## Citation
+
+If you use this code, please cite:
+
+```bibtex
+@inproceedings{wakatsuki2026selfregulating,
+  title     = {Self-Regulating Annealing in Heavy-Tailed Diffusion Models},
+  author    = {Wakatsuki, Keito and Shimazaki, Hideaki},
+  booktitle = {Proceedings of the International Joint Conference on Neural Networks},
+  year      = {2026}
+}
+```
+
+## License
+
+This repository is released under the MIT License.
