@@ -369,19 +369,9 @@ def plot_trajectories(
     n_steps: int,
     seed: int,
 ) -> None:
-    """Plot sample trajectories with and without state-dependent alpha.
+    """Plot sample trajectories with and without state-dependent alpha."""
+    colors = ["#0072B2", "#E69F00", "#CC79A7", "#56B4E9"]
 
-    Same color = same initial condition.
-    Solid line = state-dependent alpha.
-    Dashed line = ablated alpha fixed to 1.
-    """
-    colors = {
-        0.0: "#0072B2",  # blue
-        4.0: "#E69F00",  # orange
-    }
-
-    # Avoid t=0 in the simulation because the drift contains 1/t.
-    # The final point is very close to zero.
     t_grid = np.linspace(1.0, 1.0e-6, n_steps + 1)
     dt = t_grid[1] - t_grid[0]
 
@@ -389,9 +379,11 @@ def plot_trajectories(
     dW = np.sqrt(abs(dt)) * rng.standard_normal(n_steps)
 
     x_init_list = [0.0, 4.0]
+    fixed_points = [0.0, float(a)]
 
     fig, ax = plt.subplots(figsize=(10, 5))
 
+    k = 0
     for x_init in x_init_list:
         x_with = simulate_trajectory(
             x_init=x_init,
@@ -417,13 +409,16 @@ def plot_trajectories(
             use_state_dependent_alpha=False,
         )
 
-        color = colors[x_init]
+        c1 = colors[k % len(colors)]
+        k += 1
+        c2 = colors[k % len(colors)]
+        k += 1
 
         ax.plot(
             t_grid,
             x_with,
             linewidth=2.0,
-            color=color,
+            color=c1,
             linestyle="-",
             label=rf"$x_0={x_init:g}$",
         )
@@ -432,15 +427,18 @@ def plot_trajectories(
             t_grid,
             x_without,
             linewidth=2.0,
-            color=color,
+            color=c2,
             linestyle="--",
             label=rf"$x_0={x_init:g}$ ($\alpha \equiv 1$)",
         )
 
+    for fp in fixed_points:
+        ax.axhline(fp, linestyle=":", linewidth=1.0, color="0.5")
+
     ax.set_xlabel(r"$t$")
     ax.set_ylabel(r"$x(t)$")
-    ax.grid(True, linestyle="--", alpha=0.4)
-    ax.legend(loc="upper right", frameon=True)
+    ax.grid(True)
+    ax.legend(loc="upper right")
 
     fig.tight_layout()
     fig.savefig(output_path, bbox_inches="tight")
