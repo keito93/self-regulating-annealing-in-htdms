@@ -31,9 +31,26 @@ The repository reproduces the synthetic Student's t experiment used to evaluate 
 
 The scripts are organized according to the experimental workflow: data generation, training, sampling, plotting, and quantitative evaluation.
 
+## Installation
+
+Clone this repository:
+
+```bash
+git clone https://github.com/keito93/self-regulating-annealing-in-htdms.git
+cd self-regulating-annealing-in-htdms
+```
+
+Create a Python environment and install the required packages:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
 ## Usage
 
-The basic workflow consists of four steps:
+The basic workflow consists of five steps:
 
 1. Generate the dataset.
 2. Train the denoisers.
@@ -69,8 +86,8 @@ Generated samples are saved under `samples/`.
 
 ```bash
 python qq_plot.py --sample-dir samples/<sample-directory>
-Replace `<sample-directory>` with the directory created by `sample.py`.
 ```
+Replace `<sample-directory>` with the directory created by `sample.py`.
 
 ### 5. Compute quantitative metrics
 
