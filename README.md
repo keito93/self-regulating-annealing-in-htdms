@@ -29,6 +29,9 @@ The repository reproduces the synthetic Student's t experiment used to evaluate 
 └── README.md
 
 
+
+This is useful because your repo currently has a clean script-based pipeline: data generation, training, sampling, plotting, and evaluation. :contentReference[oaicite:1]{index=1} :contentReference[oaicite:2]{index=2} :contentReference[oaicite:3]{index=3} :contentReference[oaicite:4]{index=4} :contentReference[oaicite:5]{index=5}
+
 ## 3. Installation
 
 Keep it simple:
@@ -41,7 +44,3 @@ Clone the repository:
 ```bash
 git clone https://github.com/keito93/self-regulating-annealing-in-htdms.git
 cd self-regulating-annealing-in-htdms
-
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
